@@ -5,6 +5,8 @@ Java 17, Maven, Spring Boot 3.5.7 và Spring Cloud 2025.0.0.
 Ứng dụng thực hiện yêu cầu trong đề: Config Server đọc cấu hình từ Git;
 `pharmacy-service` nhận thông số database và thông tin chi nhánh, dùng `@Value`
 để in tên chi nhánh/hotline khi khởi động và mở kết nối thật tới database.
+API tính hóa đơn dùng VAT từ Git và hỗ trợ cập nhật VAT qua Actuator mà không
+khởi động lại ứng dụng.
 
 ## Cấu trúc
 
@@ -81,9 +83,86 @@ git -C .local/config-repo -c user.name='Config Demo' \
   -c user.email='config-demo@example.invalid' commit -m 'Update branch configuration'
 ```
 
-Khởi động lại **pharmacy-service** để nhận giá trị mới. Bài này không cấu hình
-refresh động. Script khởi tạo không ghi đè file cấu hình local đã tồn tại.
+VAT được cập nhật bằng `POST /actuator/refresh` như hướng dẫn bên dưới.
+Thông tin chi nhánh của bài trước vẫn được đọc lúc khởi động; muốn đổi thông tin
+đó thì khởi động lại **pharmacy-service**. Script khởi tạo giữ các giá trị local
+đã có và chỉ thêm khóa `pharmacy.vat-rate` nếu repository cũ chưa có khóa này.
 Nếu muốn thay mẫu được nộp lên Git, sửa cả `config-repo/pharmacy-service.properties`.
+
+## Tính hóa đơn và cập nhật VAT không khởi động lại
+
+`BillController` có `@RefreshScope`, nhận `pharmacy.vat-rate` bằng `@Value`.
+Dependency Actuator được khai báo trong `pharmacy-service/pom.xml`, endpoint
+`refresh` được mở trong `application.properties` của client.
+
+Quy ước `pharmacy.vat-rate=10` là **10%**. Tổng tiền sau thuế = tiền thuốc +
+tiền thuốc × VAT / 100. Tiền dùng `BigDecimal`, tiền thuế được làm tròn
+`HALF_UP` đến 2 chữ số thập phân rồi cộng vào tiền thuốc.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/bill \
+  -H 'Content-Type: application/json' \
+  -d '{"medicineTotal":100000}'
+```
+
+Kết quả với VAT 10%:
+
+```json
+{"medicineTotal":100000.00,"vatRate":10,"vatAmount":10000.00,"totalAmount":110000.00}
+```
+
+`medicineTotal` bắt buộc có, không âm, tối đa 15 chữ số phần nguyên và 2 chữ số
+thập phân; dữ liệu không hợp lệ trả HTTP 400. VAT hợp lệ nằm trong khoảng 0–100%.
+
+Để đổi VAT thành 8% khi hai service vẫn đang chạy:
+
+1. Sửa `pharmacy.vat-rate=8` trong `.local/config-repo/pharmacy-service.properties`.
+   Nếu dùng Git từ xa, sửa file ở repository cấu hình đó, commit và push.
+2. Commit thay đổi ở Git local:
+
+   ```bash
+   git -C .local/config-repo add pharmacy-service.properties
+   git -C .local/config-repo -c user.name='Config Demo' \
+     -c user.email='config-demo@example.invalid' commit -m 'Change VAT to 8 percent'
+   ```
+
+3. Gọi **client** để lấy lại cấu hình:
+
+   ```bash
+   curl -X POST http://localhost:8080/actuator/refresh
+   # Danh sách khóa thay đổi có "pharmacy.vat-rate"
+   ```
+
+4. Gọi lại API tính tiền phía trên. Kết quả áp dụng VAT 8% ngay:
+
+   ```json
+   {"medicineTotal":100000.00,"vatRate":8,"vatAmount":8000.00,"totalAmount":108000.00}
+   ```
+
+Không cần khởi động lại Config Server hoặc client để đổi VAT sau khi đã triển khai
+phiên bản này. Với nhiều máy bán thuốc, gọi `POST /actuator/refresh` trên **từng
+instance client**; một lần gọi chỉ cập nhật instance nhận request. Có thể chạy
+instance thứ hai với database demo riêng để tránh khóa file H2:
+
+```bash
+PHARMACY_PORT=8081 bash scripts/run-pharmacy-service.sh \
+  --spring.datasource.url=jdbc:h2:mem:pharmacy-2
+```
+
+Sau đó gọi refresh cả cổng 8080 và 8081.
+
+## Kiểm thử
+
+`bash scripts/build.sh` chạy các test tính tiền, làm tròn và kiểm tra dữ liệu đầu vào.
+Sau khi build, có thể kiểm tra luồng Git → Config Server → hai client bằng Python 3:
+
+```bash
+python3 scripts/test-vat-refresh.py
+```
+
+Script tạo repository Git riêng, dùng cổng trống và H2 trong bộ nhớ, đổi VAT 10% → 8%,
+gọi refresh từng client rồi xác nhận hóa đơn mới và tiến trình vẫn chạy liên tục.
+Script tự dừng các tiến trình test; log được lưu trong `.local/logs/vat-refresh/`.
 
 ## Dùng repository Git từ xa
 
@@ -116,4 +195,5 @@ local và file môi trường. Source code, POM và file cấu hình mẫu vẫn
 
 Tài liệu: [Config Client](https://docs.spring.io/spring-cloud-config/reference/client.html),
 [Spring Cloud 2025.0.0](https://spring.io/blog/2025/05/29/spring-cloud-2025-0-0-is-abvailable/).
+[Refresh Scope](https://docs.spring.io/spring-cloud-commons/reference/spring-cloud-commons/application-context-services.html#refresh-scope).
 # micro_btvn09_01

@@ -10,6 +10,11 @@ fi
 if [[ ! -f "$repo_dir/pharmacy-service.properties" ]]; then
   cp "$project_dir/config-repo/pharmacy-service.properties" "$repo_dir/"
 fi
+# Upgrade repositories created by the previous exercise without changing an existing VAT rate.
+if ! grep -Eq '^[[:space:]]*pharmacy[.]vat-rate[[:space:]]*[:=]' "$repo_dir/pharmacy-service.properties"; then
+  printf '\n' >> "$repo_dir/pharmacy-service.properties"
+  grep '^pharmacy.vat-rate=' "$project_dir/config-repo/pharmacy-service.properties" >> "$repo_dir/pharmacy-service.properties"
+fi
 git -C "$repo_dir" add pharmacy-service.properties
 if ! git -C "$repo_dir" diff --cached --quiet; then
   git -C "$repo_dir" -c user.name='Config Demo' -c user.email='config-demo@example.invalid' \
